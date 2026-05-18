@@ -230,9 +230,7 @@ def main():
     updated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     write_index(rules, updated)
     write_tactic_pages(rules, updated)
-    (SITE / "robots.txt").write_text("User-agent: *
-Allow: /
-", encoding="utf-8")
+    (SITE / "robots.txt").write_text("User-agent: *\\nAllow: /\\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
