@@ -47,6 +47,8 @@ OS_LABELS = {
     "okta": "Okta",
     "google_workspace": "Google Workspace",
     "kubernetes": "Kubernetes",
+    "sysmon": "Sysmon",
+    "powershell": "PowerShell",
 }
 
 def fetch_json(url):
@@ -81,7 +83,7 @@ def prettify(value):
     key = value.lower().replace("-", "_")
     if key in OS_LABELS:
         return OS_LABELS[key]
-    if value.isupper() and len(value) <= 5:
+    if value.isupper() and len(value) <= 6:
         return value
     return value.replace("_", " ").replace("-", " ").title()
 
@@ -93,7 +95,7 @@ def infer_platforms(logsource):
         val = logsource.get(field)
         if val:
             label = prettify(val)
-            if label not in platforms:
+            if label and label not in platforms:
                 platforms.append(label)
     return platforms
 
@@ -114,25 +116,34 @@ def extract_attack(tags, technique_lookup):
 
 def github_tree_paths():
     data = fetch_json(SIGMA_API)
-    return [x["path"] for x in data.get("tree", []) if x.get("type") == "blob" and x["path"].endswith((".yml", ".yaml"))]
+    return [
+        x["path"]
+        for x in data.get("tree", [])
+        if x.get("type") == "blob" and x["path"].endswith((".yml", ".yaml"))
+    ]
 
 def parse_rules():
     stix = fetch_json(MITRE_URL)
     technique_lookup = build_technique_lookup(stix)
     rows = []
+
     for path in github_tree_paths():
         try:
             raw = fetch_text(RAW_SIGMA + path)
             data = yaml.safe_load(raw)
+
             if not isinstance(data, dict):
                 continue
+
             title = data.get("title", "")
             if not title:
                 continue
+
             tags = data.get("tags", []) or []
             logsource = data.get("logsource", {}) or {}
             tactics, tids, tnames = extract_attack(tags, technique_lookup)
             platforms = infer_platforms(logsource)
+
             rows.append({
                 "title": str(title),
                 "id": str(data.get("id", "")),
@@ -152,6 +163,7 @@ def parse_rules():
             })
         except Exception:
             continue
+
     return rows
 
 def shell(title, body, updated):
@@ -163,7 +175,14 @@ def shell(title, body, updated):
 <title>{html.escape(title)}</title>
 <style>
 body{{font-family:Arial,sans-serif;max-width:1200px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2937}}
-a{{color:#0f766e}}table{{border-collapse:collapse;width:100%;margin-top:16px}}th,td{{border:1px solid #d1d5db;padding:8px;text-align:left;vertical-align:top}}th{{background:#f3f4f6}}.muted{{color:#6b7280}}input{{width:100%;padding:10px;font-size:16px;margin:12px 0}}ul{{columns:2;max-width:900px}}code{{background:#f3f4f6;padding:2px 6px;border-radius:4px}}
+a{{color:#0f766e}}
+table{{border-collapse:collapse;width:100%;margin-top:16px}}
+th,td{{border:1px solid #d1d5db;padding:8px;text-align:left;vertical-align:top}}
+th{{background:#f3f4f6}}
+.muted{{color:#6b7280}}
+input{{width:100%;padding:10px;font-size:16px;margin:12px 0}}
+ul{{columns:2;max-width:900px}}
+code{{background:#f3f4f6;padding:2px 6px;border-radius:4px}}
 </style>
 </head>
 <body>
@@ -178,7 +197,13 @@ def slugify(text):
 
 def rule_row(r):
     platform_text = ", ".join(r["platforms"])
-    logsource_text = " / ".join(x for x in [r["logsource_product"], r["logsource_service"], r["logsource_category"]] if x)
+    logsource_text = " / ".join(
+        x for x in [
+            r["logsource_product"],
+            r["logsource_service"],
+            r["logsource_category"]
+        ] if x
+    )
     return (
         "<tr>"
         f"<td><a href='{html.escape(r['url'])}' target='_blank' rel='noopener noreferrer'>{html.escape(r['title'])}</a></td>"
@@ -192,89 +217,4 @@ def rule_row(r):
         "</tr>"
     )
 
-def write_index(rules, updated):
-    by_tactic = defaultdict(list)
-    by_platform = defaultdict(list)
-
-    for r in rules:
-        if r["tactics"]:
-            for t in r["tactics"]:
-                by_tactic[t].append(r)
-        else:
-            by_tactic["Unmapped"].append(r)
-
-        if r["platforms"]:
-            for p in r["platforms"]:
-                by_platform[p].append(r)
-        else:
-            by_platform["Unknown"].append(r)
-
-    tactic_links = "".join(
-        f"<li><a href='tactics/{slugify(t)}.html'>{html.escape(t)}</a> ({len(v)})</li>" for t, v in sorted(by_tactic.items())
-    )
-    platform_links = "".join(
-        f"<li><a href='platforms/{slugify(p)}.html'>{html.escape(p)}</a> ({len(v)})</li>" for p, v in sorted(by_platform.items())
-    )
-    rows = "".join(rule_row(r) for r in sorted(rules, key=lambda x: x["title"].lower())[:1500])
-
-    body = f"""
-<p>This site is a Sigma catalog enriched with MITRE ATT&amp;CK mappings plus operating system or supporting technology details from the Sigma <code>logsource</code> fields.</p>
-<p><strong>Total rules indexed:</strong> {len(rules)}</p>
-<input id='q' placeholder='Search rule title, Windows, Linux, Azure, Sysmon, PowerShell, tactic, technique or description'>
-<h2>Browse by platform or technology</h2>
-<ul>{platform_links}</ul>
-<h2>Browse by MITRE tactic</h2>
-<ul>{tactic_links}</ul>
-<table id='rules'>
-<thead><tr><th>Rule</th><th>ID</th><th>OS / Technology</th><th>Logsource</th><th>Tactics</th><th>Technique IDs</th><th>Technique names</th><th>Description</th></tr></thead>
-<tbody>{rows}</tbody>
-</table>
-<script>
-const q=document.getElementById('q');
-const trs=[...document.querySelectorAll('#rules tbody tr')];
-q.addEventListener('input',e=>{
- const s=e.target.value.toLowerCase();
- trs.forEach(tr=>tr.style.display=tr.innerText.toLowerCase().includes(s)?'':'none');
-});
-</script>
-"""
-    (SITE / "index.html").write_text(shell("Sigma Hunter Catalog", body, updated), encoding="utf-8")
-
-def write_group_pages(rules, updated, group_name, folder_name, key_name):
-    out = SITE / folder_name
-    out.mkdir(parents=True, exist_ok=True)
-    grouped = defaultdict(list)
-    for r in rules:
-        values = r.get(key_name, [])
-        if values:
-            for v in values:
-                grouped[v].append(r)
-        else:
-            grouped["Unknown" if key_name == "platforms" else "Unmapped"].append(r)
-
-    for group, items in grouped.items():
-        rows = "".join(rule_row(r) for r in sorted(items, key=lambda x: x["title"].lower())[:2000])
-        back = "../index.html"
-        heading = html.escape(group)
-        body = f"""
-<p><a href='{back}'>Back to catalog</a></p>
-<p><strong>{group_name}:</strong> {heading}</p>
-<p><strong>Rules:</strong> {len(items)}</p>
-<table>
-<thead><tr><th>Rule</th><th>ID</th><th>OS / Technology</th><th>Logsource</th><th>Tactics</th><th>Technique IDs</th><th>Technique names</th><th>Description</th></tr></thead>
-<tbody>{rows}</tbody>
-</table>
-"""
-        (out / f"{slugify(group)}.html").write_text(shell(f"Sigma Rules - {group}", body, updated), encoding="utf-8")
-
-def main():
-    SITE.mkdir(parents=True, exist_ok=True)
-    rules = parse_rules()
-    updated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    write_index(rules, updated)
-    write_group_pages(rules, updated, "MITRE Tactic", "tactics", "tactics")
-    write_group_pages(rules, updated, "OS / Technology", "platforms", "platforms")
-    (SITE / "robots.txt").write_text("User-agent: *\nAllow: /\n", encoding="utf-8")
-
-if __name__ == "__main__":
-    main()
+def 
