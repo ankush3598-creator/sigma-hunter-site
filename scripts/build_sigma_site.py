@@ -201,7 +201,7 @@ def rule_row(r):
         x for x in [
             r["logsource_product"],
             r["logsource_service"],
-            r["logsource_category"]
+            r["logsource_category"],
         ] if x
     )
     return (
@@ -217,4 +217,124 @@ def rule_row(r):
         "</tr>"
     )
 
-def 
+def write_index(rules, updated):
+    by_tactic = defaultdict(list)
+    by_platform = defaultdict(list)
+
+    for r in rules:
+        if r["tactics"]:
+            for t in r["tactics"]:
+                by_tactic[t].append(r)
+        else:
+            by_tactic["Unmapped"].append(r)
+
+        if r["platforms"]:
+            for p in r["platforms"]:
+                by_platform[p].append(r)
+        else:
+            by_platform["Unknown"].append(r)
+
+    tactic_links = "".join(
+        f"<li><a href='tactics/{slugify(t)}.html'>{html.escape(t)}</a> ({len(v)})</li>"
+        for t, v in sorted(by_tactic.items())
+    )
+
+    platform_links = "".join(
+        f"<li><a href='platforms/{slugify(p)}.html'>{html.escape(p)}</a> ({len(v)})</li>"
+        for p, v in sorted(by_platform.items())
+    )
+
+    rows = "".join(
+        rule_row(r) for r in sorted(rules, key=lambda x: x["title"].lower())[:1500]
+    )
+
+    body = f"""
+<p>This site is a Sigma catalog enriched with MITRE ATT&amp;CK mappings plus operating system or supporting technology details from the Sigma <code>logsource</code> fields.</p>
+<p><strong>Total rules indexed:</strong> {len(rules)}</p>
+<input id='q' placeholder='Search rule title, Windows, Linux, Azure, Sysmon, PowerShell, tactic, technique or description'>
+<h2>Browse by platform or technology</h2>
+<ul>{platform_links}</ul>
+<h2>Browse by MITRE tactic</h2>
+<ul>{tactic_links}</ul>
+<table id='rules'>
+<thead>
+<tr>
+<th>Rule</th>
+<th>ID</th>
+<th>OS / Technology</th>
+<th>Logsource</th>
+<th>Tactics</th>
+<th>Technique IDs</th>
+<th>Technique names</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>{rows}</tbody>
+</table>
+<script>
+const q=document.getElementById('q');
+const trs=[...document.querySelectorAll('#rules tbody tr')];
+q.addEventListener('input',e=>{{
+ const s=e.target.value.toLowerCase();
+ trs.forEach(tr=>tr.style.display=tr.innerText.toLowerCase().includes(s)?'':'none');
+}});
+</script>
+"""
+    (SITE / "index.html").write_text(shell("Sigma Hunter Catalog", body, updated), encoding="utf-8")
+
+def write_group_pages(rules, updated, group_name, folder_name, key_name):
+    out = SITE / folder_name
+    out.mkdir(parents=True, exist_ok=True)
+    grouped = defaultdict(list)
+
+    for r in rules:
+        values = r.get(key_name, [])
+        if values:
+            for v in values:
+                grouped[v].append(r)
+        else:
+            grouped["Unknown" if key_name == "platforms" else "Unmapped"].append(r)
+
+    for group, items in grouped.items():
+        rows = "".join(
+            rule_row(r) for r in sorted(items, key=lambda x: x["title"].lower())[:2000]
+        )
+
+        body = f"""
+<p><a href='../index.html'>Back to catalog</a></p>
+<p><strong>{group_name}:</strong> {html.escape(group)}</p>
+<p><strong>Rules:</strong> {len(items)}</p>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>ID</th>
+<th>OS / Technology</th>
+<th>Logsource</th>
+<th>Tactics</th>
+<th>Technique IDs</th>
+<th>Technique names</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>{rows}</tbody>
+</table>
+"""
+        (out / f"{slugify(group)}.html").write_text(
+            shell(f"Sigma Rules - {group}", body, updated),
+            encoding="utf-8"
+        )
+
+def main():
+    SITE.mkdir(parents=True, exist_ok=True)
+    rules = parse_rules()
+    updated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    write_index(rules, updated)
+    write_group_pages(rules, updated, "MITRE Tactic", "tactics", "tactics")
+    write_group_pages(rules, updated, "OS / Technology", "platforms", "platforms")
+
+    (SITE / "robots.txt").write_text("User-agent: *\nAllow: /\n", encoding="utf-8")
+
+if __name__ == "__main__":
+    main()
